@@ -1,0 +1,17 @@
+/target/
+**/*.rs.bk
+*.pdb
+.DS_Store
+.env
+.env.*
+*.db
+*.db-shm
+*.db-wal
+.idea/
+.vscode/
+*.log
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/

@@ -1,0 +1,11 @@
+[application]
+name = "medquiz"
+default_platform = "desktop"
+
+[desktop]
+title = "MedQuiz — USMLE & COMLEX Practice"
+width = 1100
+height = 720
+min_width = 900
+min_height = 600
+resizable = true

@@ -1,0 +1,1 @@
+"""MedQuiz — lightweight native desktop app for USMLE/COMLEX practice."""
