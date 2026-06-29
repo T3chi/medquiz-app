@@ -41,3 +41,7 @@ pub fn parse_question_count(raw: &str, _fallback: i32) -> Option<i32> {
 }
 
 pub const LAST_UPLOAD_DIR_KEY: &str = "last_upload_dir";
+pub const ONBOARDING_COMPLETE_KEY: &str = "onboarding_complete";
+pub const DAILY_GOAL_KEY: &str = "daily_goal";
+pub const DEFAULT_QUIZ_SETTINGS_KEY: &str = "default_quiz_settings";
+pub const DEFAULT_DAILY_GOAL: u32 = 20;

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -94,6 +96,12 @@ pub struct AppSettings {
     pub model: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct UserPreferences {
+    pub daily_goal: u32,
+    pub default_quiz_settings: QuizSettings,
+}
+
 #[derive(Debug, Clone)]
 pub struct QuestionAttempt {
     pub id: String,
@@ -162,6 +170,108 @@ pub struct DailyActivity {
     pub answered: u32,
     pub correct: u32,
     pub app_opens: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LearnModality {
+    MultipleChoice,
+    Matching,
+    ShortAnswer,
+    AnalogyCompletion,
+    CreateAnalogy,
+    RelationshipArrows,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ArrowDirection {
+    Up,
+    Down,
+    Associated,
+}
+
+impl ArrowDirection {
+    pub fn symbol(self) -> &'static str {
+        match self {
+            ArrowDirection::Up => "↑",
+            ArrowDirection::Down => "↓",
+            ArrowDirection::Associated => "↔",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ArrowDirection::Up => "Increases",
+            ArrowDirection::Down => "Decreases",
+            ArrowDirection::Associated => "Associated",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchingPair {
+    pub left_id: String,
+    pub left_text: String,
+    pub right_id: String,
+    pub right_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelationshipItem {
+    pub id: String,
+    pub anchor: String,
+    pub target: String,
+    pub correct_direction: ArrowDirection,
+}
+
+#[derive(Debug, Clone)]
+pub struct LearnItem {
+    pub question_id: String,
+    pub modality: LearnModality,
+    pub level: u32,
+    pub concept_title: String,
+    pub prompt: String,
+    pub options: Option<Vec<QuestionOption>>,
+    pub matching_pairs: Option<Vec<MatchingPair>>,
+    pub analogy_choices: Option<Vec<QuestionOption>>,
+    pub correct_answer: String,
+    pub acceptable_keywords: Vec<String>,
+    pub relationships: Option<Vec<RelationshipItem>>,
+    pub reference_explanation: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum LearnResponse {
+    SelectedOption(String),
+    Matching(HashMap<String, String>),
+    Text(String),
+    ArrowDirections(HashMap<String, ArrowDirection>),
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LearnMastery {
+    pub question_id: String,
+    pub current_level: u32,
+    pub consecutive_correct: u32,
+    pub highest_level: u32,
+    pub updated_at: String,
+}
+
+impl LearnMastery {
+    pub fn default_for(question_id: &str) -> Self {
+        Self {
+            question_id: question_id.to_string(),
+            current_level: 1,
+            consecutive_correct: 0,
+            highest_level: 1,
+            updated_at: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LearnSettings {
+    pub question_count: i32,
+    pub source_file_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -5,13 +5,18 @@ use rand::seq::SliceRandom;
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
-use crate::config::db_path;
+use crate::config::{
+    db_path, DEFAULT_DAILY_GOAL, DEFAULT_QUIZ_SETTINGS_KEY, DAILY_GOAL_KEY,
+    ONBOARDING_COMPLETE_KEY,
+};
 use crate::domain::analytics::{build_dashboard, AttemptRow, RawDailyUsage};
 use crate::domain::backfill::{enrich_citation, infer_citation, infer_subjects};
 use crate::domain::citations::extract_professor_name;
+use crate::domain::learn::{apply_mastery_result, build_learn_item};
 use crate::models::{
-    AppSettings, Citation, DashboardAnalytics, Question, QuestionAttempt, QuestionOption,
-    QuizSession, QuizSettings, ReviewPool, SourceFile, SourceFileDetail,
+    AppSettings, Citation, DashboardAnalytics, LearnMastery, Question, QuestionAttempt,
+    QuestionOption, QuizSession, QuizSettings, ReviewPool, SourceFile, SourceFileDetail,
+    UserPreferences,
 };
 
 pub struct Database {
@@ -83,6 +88,24 @@ impl Database {
                 questions_correct INTEGER NOT NULL DEFAULT 0,
                 quizzes_started INTEGER NOT NULL DEFAULT 0,
                 quizzes_completed INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS learn_mastery (
+                question_id TEXT PRIMARY KEY,
+                current_level INTEGER NOT NULL DEFAULT 1,
+                consecutive_correct INTEGER NOT NULL DEFAULT 0,
+                highest_level INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS learn_attempts (
+                id TEXT PRIMARY KEY,
+                question_id TEXT NOT NULL,
+                modality TEXT NOT NULL,
+                level INTEGER NOT NULL,
+                response TEXT NOT NULL,
+                is_correct INTEGER NOT NULL,
+                answered_at TEXT NOT NULL,
+                FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE
             );
             "#,
         )?;
@@ -549,6 +572,76 @@ impl Database {
         Ok(())
     }
 
+    pub fn api_configured(&self) -> bool {
+        self.get_app_settings()
+            .map(|s| !s.api_key.trim().is_empty())
+            .unwrap_or(false)
+    }
+
+    pub fn is_onboarding_complete(&self) -> bool {
+        self.get_preference(ONBOARDING_COMPLETE_KEY)
+            .map(|v| v == "1")
+            .unwrap_or(false)
+    }
+
+    pub fn set_onboarding_complete(&self) -> anyhow::Result<()> {
+        self.set_preference(ONBOARDING_COMPLETE_KEY, "1")
+    }
+
+    pub fn get_user_preferences(&self) -> anyhow::Result<UserPreferences> {
+        let daily_goal = self
+            .get_preference(DAILY_GOAL_KEY)?
+            .parse::<u32>()
+            .unwrap_or(DEFAULT_DAILY_GOAL);
+        let settings_raw = self.get_preference(DEFAULT_QUIZ_SETTINGS_KEY)?;
+        let default_quiz_settings = if settings_raw.trim().is_empty() {
+            QuizSettings::default()
+        } else {
+            serde_json::from_str(&settings_raw).unwrap_or_default()
+        };
+        Ok(UserPreferences {
+            daily_goal,
+            default_quiz_settings,
+        })
+    }
+
+    pub fn save_user_preferences(&self, prefs: &UserPreferences) -> anyhow::Result<()> {
+        self.set_preference(DAILY_GOAL_KEY, &prefs.daily_goal.to_string())?;
+        self.set_preference(
+            DEFAULT_QUIZ_SETTINGS_KEY,
+            &serde_json::to_string(&prefs.default_quiz_settings)?,
+        )?;
+        Ok(())
+    }
+
+    pub fn get_last_quiz_score(&self) -> Option<f64> {
+        self.conn
+            .query_row(
+                "SELECT score FROM quiz_sessions WHERE completed_at IS NOT NULL
+                 ORDER BY completed_at DESC LIMIT 1 OFFSET 1",
+                [],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
+    pub fn get_question_ids_by_subject(&self, subject: &str, limit: usize) -> anyhow::Result<Vec<String>> {
+        let questions = self.get_questions(None, None, None)?;
+        let subject_lower = subject.to_lowercase();
+        let mut ids: Vec<String> = questions
+            .into_iter()
+            .filter(|q| {
+                q.subjects
+                    .iter()
+                    .any(|s| s.to_lowercase() == subject_lower)
+            })
+            .map(|q| q.id)
+            .collect();
+        ids.shuffle(&mut rand::thread_rng());
+        ids.truncate(limit);
+        Ok(ids)
+    }
+
     pub fn update_question_metadata(
         &self,
         question_id: &str,
@@ -633,6 +726,146 @@ impl Database {
         }
 
         Ok(report)
+    }
+
+    pub fn get_learn_mastery_map(&self) -> anyhow::Result<std::collections::HashMap<String, LearnMastery>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT question_id, current_level, consecutive_correct, highest_level, updated_at
+             FROM learn_mastery",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(LearnMastery {
+                question_id: r.get(0)?,
+                current_level: r.get::<_, i64>(1)? as u32,
+                consecutive_correct: r.get::<_, i64>(2)? as u32,
+                highest_level: r.get::<_, i64>(3)? as u32,
+                updated_at: r.get(4)?,
+            })
+        })?;
+        Ok(rows
+            .filter_map(Result::ok)
+            .map(|m| (m.question_id.clone(), m))
+            .collect())
+    }
+
+    pub fn save_learn_mastery(&self, mastery: &LearnMastery) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT INTO learn_mastery (question_id, current_level, consecutive_correct, highest_level, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(question_id) DO UPDATE SET
+               current_level = excluded.current_level,
+               consecutive_correct = excluded.consecutive_correct,
+               highest_level = excluded.highest_level,
+               updated_at = excluded.updated_at",
+            params![
+                mastery.question_id,
+                mastery.current_level,
+                mastery.consecutive_correct,
+                mastery.highest_level,
+                mastery.updated_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn record_learn_attempt(
+        &self,
+        question_id: &str,
+        modality: &str,
+        level: u32,
+        response: &str,
+        is_correct: bool,
+    ) -> anyhow::Result<(LearnMastery, bool)> {
+        let id = Uuid::new_v4().to_string();
+        let answered_at = Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO learn_attempts (id, question_id, modality, level, response, is_correct, answered_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id,
+                question_id,
+                modality,
+                level,
+                response,
+                is_correct as i32,
+                answered_at
+            ],
+        )?;
+
+        let mut mastery_map = self.get_learn_mastery_map()?;
+        let mut mastery = mastery_map
+            .remove(question_id)
+            .unwrap_or_else(|| LearnMastery::default_for(question_id));
+        let leveled_up = apply_mastery_result(&mut mastery, is_correct);
+        self.save_learn_mastery(&mastery)?;
+
+        let summary = format!("learn:{modality}:level{level}");
+        self.record_question_attempt(question_id, &summary, is_correct, None)?;
+
+        Ok((mastery, leveled_up))
+    }
+
+    pub fn get_learn_question_ids(
+        &self,
+        source_file_id: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<String>> {
+        let questions = self.get_questions(source_file_id, None, None)?;
+        let mastery_map = self.get_learn_mastery_map()?;
+
+        let mut ranked: Vec<(String, u32, u32)> = questions
+            .into_iter()
+            .map(|q| {
+                let m = mastery_map
+                    .get(&q.id)
+                    .cloned()
+                    .unwrap_or_else(|| LearnMastery::default_for(&q.id));
+                (q.id, m.current_level, m.consecutive_correct)
+            })
+            .collect();
+
+        ranked.sort_by(|a, b| a.1.cmp(&b.1).then(a.2.cmp(&b.2)));
+        let mut ids: Vec<String> = ranked.into_iter().map(|(id, _, _)| id).collect();
+        ids.shuffle(&mut rand::thread_rng());
+
+        let mut by_level: std::collections::BTreeMap<u32, Vec<String>> =
+            std::collections::BTreeMap::new();
+        let mastery_map = self.get_learn_mastery_map()?;
+        for id in ids {
+            let level = mastery_map
+                .get(&id)
+                .map(|m| m.current_level)
+                .unwrap_or(1);
+            by_level.entry(level).or_default().push(id);
+        }
+
+        let mut result = Vec::new();
+        for (_level, mut group) in by_level {
+            group.shuffle(&mut rand::thread_rng());
+            for id in group {
+                if result.len() >= limit {
+                    break;
+                }
+                result.push(id);
+            }
+            if result.len() >= limit {
+                break;
+            }
+        }
+        Ok(result)
+    }
+
+    pub fn build_learn_followup_item(
+        &self,
+        question_id: &str,
+        level: u32,
+    ) -> anyhow::Result<Option<crate::models::LearnItem>> {
+        let questions = self.get_questions_by_ids(&[question_id.to_string()])?;
+        let Some(question) = questions.into_iter().next() else {
+            return Ok(None);
+        };
+        let pool = self.get_questions(None, None, None)?;
+        Ok(Some(build_learn_item(&question, level, &pool)))
     }
 }
 

@@ -117,3 +117,21 @@ impl QuizService {
 fn report(on_progress: &mut impl FnMut(&str, f64), message: &str, percent: f64) {
     on_progress(message, percent.clamp(0.0, 100.0));
 }
+
+pub async fn test_api_connection(settings: &AppSettings) -> anyhow::Result<()> {
+    if settings.api_key.trim().is_empty() {
+        anyhow::bail!("Add your API key in Settings first.");
+    }
+    let url = format!(
+        "{}/models",
+        settings.api_base_url.trim_end_matches('/')
+    );
+    let client = reqwest::Client::new();
+    client
+        .get(&url)
+        .bearer_auth(&settings.api_key)
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}

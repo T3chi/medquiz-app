@@ -155,7 +155,7 @@ fn subject_rankings(attempts: &[AttemptRow]) -> (Vec<SubjectStats>, Vec<SubjectS
         }
     }
 
-    let mut stats: Vec<SubjectStats> = map
+    let stats: Vec<SubjectStats> = map
         .into_iter()
         .map(|(subject, (attempted, correct))| SubjectStats {
             subject,

@@ -1,9 +1,11 @@
-use dioxus::desktop::Config;
+use dioxus::desktop::{Config, WindowBuilder};
+use medquiz::config::APP_NAME;
 
 fn main() {
     dioxus::LaunchBuilder::desktop()
         .with_cfg(
             Config::new()
+                .with_window(WindowBuilder::new().with_title(APP_NAME))
                 .with_background_color((10, 12, 16, 255))
                 .with_custom_head(
                     r#"
